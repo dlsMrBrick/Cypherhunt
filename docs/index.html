@@ -3,21 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>The Vault of Four Doors</title>
-  <meta name="description" content="Four doors. Four ciphers. Each opens only for the password hidden in the one before it.">
+  <title>The Vault of Six Doors</title>
+  <meta name="description" content="Six doors. Six ciphers. Each opens only for the password you earn from the one before it.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <main class="wrap">
     <header class="hero">
       <p class="eyebrow">A cipher challenge</p>
-      <h1>The Vault of Four Doors</h1>
-      <p class="sub">Four doors, four ciphers. Each door opens only for the password hidden inside the one before it.</p>
+      <h1>The Vault of Six Doors</h1>
+      <p class="sub">Six doors, six ciphers. Each door opens only for the password you earn from the one before it. Pencil and paper recommended.</p>
       <nav class="pips" aria-label="Progress">
         <span data-pip="1" class="on">I</span>
         <span data-pip="2">II</span>
         <span data-pip="3">III</span>
         <span data-pip="4">IV</span>
+        <span data-pip="5">V</span>
+        <span data-pip="6">VI</span>
       </nav>
     </header>
 
@@ -37,11 +39,7 @@
       <h3>The Cipher</h3>
       <p>This is a <strong>Caesar cipher</strong>: every letter of the message has been pushed forward through the alphabet by the same number of places. Spaces and punctuation are left alone.</p>
       <pre class="cipher" id="cipher-1">Loading&hellip;</pre>
-      <div class="tool" data-tool="caesar" data-source="#cipher-1">
-        <label for="caesar-shift">Shift each letter back by</label>
-        <input id="caesar-shift" type="number" min="0" max="25" inputmode="numeric" placeholder="0&ndash;25">
-        <pre class="out" aria-live="polite">&mdash;</pre>
-      </div>
+      <p><strong>To decrypt:</strong> move every letter <em>back</em> through the alphabet by the key, wrapping round from A to Z. Leave spaces and punctuation as they are.</p>
 
       <form class="gate" data-next="2">
         <label>Found the password? Speak it to open Door II.</label>
@@ -64,6 +62,14 @@
     </section>
     <section class="door locked" id="door-4">
       <p class="locked-msg"><span class="lock">Locked</span> Door IV. Solve the third door to open it.</p>
+      <div class="door-body" hidden></div>
+    </section>
+    <section class="door locked" id="door-5">
+      <p class="locked-msg"><span class="lock">Locked</span> Door V. Solve the fourth door to open it.</p>
+      <div class="door-body" hidden></div>
+    </section>
+    <section class="door locked" id="door-6">
+      <p class="locked-msg"><span class="lock">Locked</span> Door VI. Solve the fifth door to open it.</p>
       <div class="door-body" hidden></div>
     </section>
 
@@ -90,22 +96,43 @@
     const b64 = (s) => Uint8Array.from(atob(s.replace(/\s+/g, '')), (c) => c.charCodeAt(0));
     const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 
-    const mod26 = (n) => ((n % 26) + 26) % 26;
-    const caesar = (text, shift) =>
-      text.replace(/[A-Za-z]/g, (c) => {
-        const base = c <= 'Z' ? 65 : 97;
-        return String.fromCharCode(mod26(c.charCodeAt(0) - base + shift) + base);
-      });
-    function vigenereDecode(text, key) {
-      const k = key.toUpperCase().replace(/[^A-Z]/g, '');
-      if (!k) return null;
-      let j = 0;
-      return text.replace(/[A-Za-z]/g, (c) => {
-        const base = c <= 'Z' ? 65 : 97;
-        const shift = k.charCodeAt(j++ % k.length) - 65;
-        return String.fromCharCode(mod26(c.charCodeAt(0) - base - shift) + base);
+    /* ---------- Vigenere table (a reference only; it does no work for the student) ---------- */
+
+    const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+    function buildTabula(root) {
+      root.querySelectorAll('[data-tabula]').forEach((host) => {
+        let h = '<div class="tabula-wrap"><table class="tabula" aria-label="Vigenère table">';
+        h += '<thead><tr><th class="corner" aria-hidden="true"></th>';
+        for (let c = 0; c < 26; c++) h += `<th scope="col" data-c="${c}">${ALPHA[c]}</th>`;
+        h += '</tr></thead><tbody>';
+        for (let r = 0; r < 26; r++) {
+          h += `<tr><th scope="row" data-r="${r}">${ALPHA[r]}</th>`;
+          for (let c = 0; c < 26; c++) h += `<td data-r="${r}" data-c="${c}">${ALPHA[(r + c) % 26]}</td>`;
+          h += '</tr>';
+        }
+        h += '</tbody></table></div>';
+        h += '<p class="tabula-hint">Tap or hover over any square to highlight its row and column.</p>';
+        host.innerHTML = h;
       });
     }
+
+    // Highlight the row and column under the pointer, to help the eye follow along.
+    function highlightTabula(e) {
+      const cell = e.target.closest('.tabula [data-r], .tabula [data-c]');
+      if (!cell) return;
+      const table = cell.closest('table');
+      const { r, c } = cell.dataset;
+      (table._lit || []).forEach((x) => x.classList.remove('hl', 'hl-x'));
+      const sel = [];
+      if (r !== undefined) sel.push(`[data-r="${r}"]`);
+      if (c !== undefined) sel.push(`[data-c="${c}"]`);
+      table._lit = [...table.querySelectorAll(sel.join(','))];
+      table._lit.forEach((x) => x.classList.add('hl'));
+      if (r !== undefined && c !== undefined) cell.classList.add('hl-x');
+    }
+    document.addEventListener('mouseover', highlightTabula);
+    document.addEventListener('click', highlightTabula);
 
     /* ---------- door sealing (PBKDF2 -> AES-GCM) ---------- */
 
@@ -148,6 +175,7 @@
       $('.locked-msg', el).hidden = true;
       const body = $('.door-body', el);
       body.innerHTML = html;
+      buildTabula(body);
       body.hidden = false;
       updatePips();
       if (scroll) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -184,32 +212,13 @@
 
       if (html === null) {
         msg.className = 'gate-msg bad';
-        msg.textContent = 'The door does not move. That is not the password.';
+        msg.textContent = form.dataset.wrong || 'The door does not move. That is not the password.';
         return;
       }
       save(n, pass);
       msg.className = 'gate-msg good';
       msg.textContent = 'The lock turns.';
       renderDoor(n, html, true);
-    });
-
-    /* ---------- live decoder tools (Caesar, Vigenere) ---------- */
-
-    document.addEventListener('input', (e) => {
-      const tool = e.target.closest('[data-tool]');
-      if (!tool) return;
-      const kind = tool.dataset.tool;
-      const src = $(tool.dataset.source || '#none');
-      const out = $('.out', tool);
-      if (!src || !out) return;
-
-      if (kind === 'caesar') {
-        const s = parseInt(e.target.value, 10);
-        out.textContent = Number.isNaN(s) ? '—' : caesar(src.textContent, -s);
-      } else if (kind === 'vigenere') {
-        const r = vigenereDecode(src.textContent, e.target.value);
-        out.textContent = r === null ? '—' : r;
-      }
     });
 
     /* ---------- AES (OpenSSL format) and RSA tools ---------- */
@@ -246,7 +255,7 @@
         if (!key) return setOut(out, 'Enter a key first.', true);
         btn.disabled = true;
         try {
-          setOut(out, await opensslDecrypt($('#cipher-3', body).textContent, key));
+          setOut(out, await opensslDecrypt($('#cipher-5', body).textContent, key));
         } catch (_) {
           setOut(out, 'Decryption failed. Is the key exactly right?', true);
         }
@@ -289,7 +298,7 @@
 
       // Restore earlier progress, stopping at the first door that no longer opens.
       const saved = loadSaved();
-      for (let n = 2; n <= 4; n++) {
+      for (let n = 2; n <= 6; n++) {
         if (!saved[n]) break;
         const html = await openDoor(n, saved[n]);
         if (html === null) break;
