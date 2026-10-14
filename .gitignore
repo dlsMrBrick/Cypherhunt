@@ -1,0 +1,3 @@
+# The author folder holds the answers and the build script. Never publish it.
+author/
+node_modules/

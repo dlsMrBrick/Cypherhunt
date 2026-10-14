@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Vault of Four Doors</title>
+  <meta name="description" content="Four doors. Four ciphers. Each opens only for the password hidden in the one before it.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <p class="eyebrow">A cipher challenge</p>
+      <h1>The Vault of Four Doors</h1>
+      <p class="sub">Four doors, four ciphers. Each door opens only for the password hidden inside the one before it.</p>
+      <nav class="pips" aria-label="Progress">
+        <span data-pip="1" class="on">I</span>
+        <span data-pip="2">II</span>
+        <span data-pip="3">III</span>
+        <span data-pip="4">IV</span>
+      </nav>
+    </header>
+
+    <noscript>
+      <section class="door"><p>This vault runs entirely in your browser, so it needs JavaScript switched on.</p></section>
+    </noscript>
+
+    <!-- DOOR I: visible from the start -->
+    <section class="door open" id="door-1">
+      <h2><span class="num">I</span>The First Door</h2>
+      <p class="lore">You stand before an old iron door. Scratched into it is a riddle, and beneath the riddle, a message in a scrambled alphabet.</p>
+
+      <h3>The Riddle</h3>
+      <blockquote class="riddle">I am the beginning of eternity, the end of time and space, the beginning of every end, and the end of every place.<br>What am I?</blockquote>
+      <p>The answer is a single letter. Its position in the alphabet (A&nbsp;=&nbsp;1, B&nbsp;=&nbsp;2, C&nbsp;=&nbsp;3 &hellip;) is the <strong>key</strong> to the cipher below.</p>
+
+      <h3>The Cipher</h3>
+      <p>This is a <strong>Caesar cipher</strong>: every letter of the message has been pushed forward through the alphabet by the same number of places. Spaces and punctuation are left alone.</p>
+      <pre class="cipher" id="cipher-1">Loading&hellip;</pre>
+      <div class="tool" data-tool="caesar" data-source="#cipher-1">
+        <label for="caesar-shift">Shift each letter back by</label>
+        <input id="caesar-shift" type="number" min="0" max="25" inputmode="numeric" placeholder="0&ndash;25">
+        <pre class="out" aria-live="polite">&mdash;</pre>
+      </div>
+
+      <form class="gate" data-next="2">
+        <label>Found the password? Speak it to open Door II.</label>
+        <div class="row">
+          <input type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="password" aria-label="Password for Door II">
+          <button type="submit">Unlock Door II</button>
+        </div>
+        <p class="gate-msg" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <!-- DOORS II-IV: sealed until the previous password is spoken -->
+    <section class="door locked" id="door-2">
+      <p class="locked-msg"><span class="lock">Locked</span> Door II. Solve the first door to open it.</p>
+      <div class="door-body" hidden></div>
+    </section>
+    <section class="door locked" id="door-3">
+      <p class="locked-msg"><span class="lock">Locked</span> Door III. Solve the second door to open it.</p>
+      <div class="door-body" hidden></div>
+    </section>
+    <section class="door locked" id="door-4">
+      <p class="locked-msg"><span class="lock">Locked</span> Door IV. Solve the third door to open it.</p>
+      <div class="door-body" hidden></div>
+    </section>
+
+    <footer>
+      <p>Everything here runs in your browser. Nothing is sent anywhere.</p>
+      <p><button type="button" class="link" id="reset">Reset my progress</button></p>
+    </footer>
+  </main>
+
+  <script src="vault.js"></script>
+  <script>
+  (() => {
+    'use strict';
+
+    const V = window.VAULT;
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    const $ = (sel, root = document) => root.querySelector(sel);
+
+    /* ---------- small helpers ---------- */
+
+    // Passwords are compared ignoring case, spaces and punctuation.
+    const normalize = (s) => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const b64 = (s) => Uint8Array.from(atob(s.replace(/\s+/g, '')), (c) => c.charCodeAt(0));
+    const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+    const mod26 = (n) => ((n % 26) + 26) % 26;
+    const caesar = (text, shift) =>
+      text.replace(/[A-Za-z]/g, (c) => {
+        const base = c <= 'Z' ? 65 : 97;
+        return String.fromCharCode(mod26(c.charCodeAt(0) - base + shift) + base);
+      });
+    function vigenereDecode(text, key) {
+      const k = key.toUpperCase().replace(/[^A-Z]/g, '');
+      if (!k) return null;
+      let j = 0;
+      return text.replace(/[A-Za-z]/g, (c) => {
+        const base = c <= 'Z' ? 65 : 97;
+        const shift = k.charCodeAt(j++ % k.length) - 65;
+        return String.fromCharCode(mod26(c.charCodeAt(0) - base - shift) + base);
+      });
+    }
+
+    /* ---------- door sealing (PBKDF2 -> AES-GCM) ---------- */
+
+    async function openDoor(n, password) {
+      const d = V.doors[n];
+      try {
+        const base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+        const key = await crypto.subtle.deriveKey(
+          { name: 'PBKDF2', salt: b64(d.salt), iterations: V.iterations, hash: 'SHA-256' },
+          base,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['decrypt']
+        );
+        const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(d.iv) }, key, b64(d.data));
+        return dec.decode(plain);
+      } catch (_) {
+        return null; // wrong password (the GCM tag check fails)
+      }
+    }
+
+    /* ---------- progress ---------- */
+
+    const STORE = 'vault-of-four-doors/v1';
+    const loadSaved = () => { try { return JSON.parse(localStorage.getItem(STORE) || '{}'); } catch (_) { return {}; } };
+    const save = (n, pass) => { try { const s = loadSaved(); s[n] = pass; localStorage.setItem(STORE, JSON.stringify(s)); } catch (_) {} };
+    const clearSaved = () => { try { localStorage.removeItem(STORE); } catch (_) {} };
+
+    function updatePips() {
+      document.querySelectorAll('[data-pip]').forEach((p) => {
+        const door = document.getElementById('door-' + p.dataset.pip);
+        p.classList.toggle('on', door.classList.contains('open'));
+      });
+    }
+
+    function renderDoor(n, html, scroll) {
+      const el = document.getElementById('door-' + n);
+      el.classList.remove('locked');
+      el.classList.add('open');
+      $('.locked-msg', el).hidden = true;
+      const body = $('.door-body', el);
+      body.innerHTML = html;
+      body.hidden = false;
+      updatePips();
+      if (scroll) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    /* ---------- gates (password forms) ---------- */
+
+    document.addEventListener('submit', async (e) => {
+      const form = e.target.closest('form.gate');
+      if (!form) return;
+      e.preventDefault();
+
+      const n = Number(form.dataset.next);
+      const msg = $('.gate-msg', form);
+      const btn = $('button', form);
+      const pass = normalize($('input', form).value);
+
+      if (document.getElementById('door-' + n).classList.contains('open')) {
+        msg.className = 'gate-msg good';
+        msg.textContent = 'That door is already open.';
+        return;
+      }
+      if (!pass) {
+        msg.className = 'gate-msg';
+        msg.textContent = 'Say something first.';
+        return;
+      }
+
+      btn.disabled = true;
+      msg.className = 'gate-msg';
+      msg.textContent = 'Listening…';
+      const html = await openDoor(n, pass);
+      btn.disabled = false;
+
+      if (html === null) {
+        msg.className = 'gate-msg bad';
+        msg.textContent = 'The door does not move. That is not the password.';
+        return;
+      }
+      save(n, pass);
+      msg.className = 'gate-msg good';
+      msg.textContent = 'The lock turns.';
+      renderDoor(n, html, true);
+    });
+
+    /* ---------- live decoder tools (Caesar, Vigenere) ---------- */
+
+    document.addEventListener('input', (e) => {
+      const tool = e.target.closest('[data-tool]');
+      if (!tool) return;
+      const kind = tool.dataset.tool;
+      const src = $(tool.dataset.source || '#none');
+      const out = $('.out', tool);
+      if (!src || !out) return;
+
+      if (kind === 'caesar') {
+        const s = parseInt(e.target.value, 10);
+        out.textContent = Number.isNaN(s) ? '—' : caesar(src.textContent, -s);
+      } else if (kind === 'vigenere') {
+        const r = vigenereDecode(src.textContent, e.target.value);
+        out.textContent = r === null ? '—' : r;
+      }
+    });
+
+    /* ---------- AES (OpenSSL format) and RSA tools ---------- */
+
+    // Same format as: openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -md sha256 -a
+    async function opensslDecrypt(base64Text, password) {
+      const raw = b64(base64Text);
+      if (dec.decode(raw.slice(0, 8)) !== 'Salted__') throw new Error('bad header');
+      const salt = raw.slice(8, 16);
+      const ct = raw.slice(16);
+      const base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+      const bits = new Uint8Array(
+        await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' }, base, 384)
+      );
+      const key = await crypto.subtle.importKey('raw', bits.slice(0, 32), 'AES-CBC', false, ['decrypt']);
+      const plain = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: bits.slice(32, 48) }, key, ct);
+      return dec.decode(plain);
+    }
+
+    function setOut(out, text, isErr) {
+      out.textContent = text;
+      out.classList.toggle('err', !!isErr);
+    }
+
+    document.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      const body = btn.closest('.door-body');
+      if (!body) return;
+
+      if (btn.dataset.action === 'aes-decrypt') {
+        const out = $('.out', btn.closest('.tool'));
+        const key = $('#aes-key', body).value;
+        if (!key) return setOut(out, 'Enter a key first.', true);
+        btn.disabled = true;
+        try {
+          setOut(out, await opensslDecrypt($('#cipher-3', body).textContent, key));
+        } catch (_) {
+          setOut(out, 'Decryption failed. Is the key exactly right?', true);
+        }
+        btn.disabled = false;
+      }
+
+      if (btn.dataset.action === 'rsa-try') {
+        const out = $('#rsa-out', body);
+        const pem = $('#rsa-priv', body).value;
+        if (!pem.trim()) return setOut(out, 'Paste a private key first.', true);
+        btn.disabled = true;
+        try {
+          const der = b64(pem.replace(/-----[^-]+-----/g, ''));
+          const key = await crypto.subtle.importKey('pkcs8', der, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['decrypt']);
+          const secret = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, key, b64($('#rsa-ct', body).textContent));
+          const match = hex(await crypto.subtle.digest('SHA-256', secret)) === $('#rsa-hash', body).textContent.trim();
+          setOut(out, match ? 'The secret matches. You did the impossible.' : 'That key opened the lock, but the hash does not match.', !match);
+        } catch (_) {
+          setOut(out, 'That private key does not open this door.', true);
+        }
+        btn.disabled = false;
+      }
+    });
+
+    $('#reset').addEventListener('click', () => {
+      clearSaved();
+      location.reload();
+    });
+
+    /* ---------- start up ---------- */
+
+    (async function init() {
+      $('#cipher-1').textContent = V.door1.ciphertext;
+
+      if (!(window.crypto && crypto.subtle)) {
+        $('#door-2 .locked-msg').textContent =
+          'Your browser is blocking its crypto tools. Open this page over https:// (or localhost) and try again.';
+        return;
+      }
+
+      // Restore earlier progress, stopping at the first door that no longer opens.
+      const saved = loadSaved();
+      for (let n = 2; n <= 4; n++) {
+        if (!saved[n]) break;
+        const html = await openDoor(n, saved[n]);
+        if (html === null) break;
+        renderDoor(n, html, false);
+      }
+    })();
+  })();
+  </script>
+</body>
+</html>
